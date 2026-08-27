@@ -109,6 +109,13 @@
     color:#6a11cb;
     -webkit-text-fill-color:#6a11cb;
   }
+  .bgm-btn{
+    width:38px;height:38px;border-radius:50%;
+    background:var(--card);border:1px solid var(--line);
+    color:#6a11cb;font-size:16px;font-weight:900;
+    box-shadow:0 2px 8px rgba(99,102,241,0.08);
+    flex-shrink:0;padding:0;
+  }
   .lot-counter{
     font-family:'Nunito',sans-serif;
     font-size:12px;
@@ -997,7 +1004,10 @@
         <div class="byline">by DG</div>
       </div>
     </div>
-    <div id="lotCounterTop" class="lot-counter" style="display:none;"></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button class="bgm-btn" id="bgmBtn" title="Background music" onclick="toggleBgm()">♪</button>
+      <div id="lotCounterTop" class="lot-counter" style="display:none;"></div>
+    </div>
   </div>
 
   <div id="root" class="stage"></div>
@@ -1120,6 +1130,73 @@ function playSfx(name){
     o.start(now); o.stop(now + dur + 0.02);
   }catch(e){}
 }
+
+const BGM = { on: true, timer: null, started: false };
+function audioCtx(){
+  return playSfx._ctx || (playSfx._ctx = new (window.AudioContext||window.webkitAudioContext)());
+}
+function bgmTone(ctx, type, freq, start, dur, vol, dest){
+  const o = ctx.createOscillator();
+  const g = ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, start);
+  g.gain.setValueAtTime(0.0001, start);
+  g.gain.linearRampToValueAtTime(vol, start + 0.04);
+  g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+  o.connect(g); g.connect(dest);
+  o.start(start); o.stop(start + dur + 0.02);
+}
+function startBgm(){
+  if(!BGM.on) return;
+  try{
+    const ctx = audioCtx();
+    if(ctx.state==='suspended') ctx.resume();
+    if(BGM.timer) return;
+    BGM.started = true;
+    const master = ctx.createGain();
+    master.gain.value = 0.055; // quiet vibey bed
+    master.connect(ctx.destination);
+    const step = 0.46;
+    const playBar = ()=>{
+      if(!BGM.on) return;
+      const now = ctx.currentTime + 0.03;
+      // warm pad chords
+      const chords = [
+        [196.00, 246.94, 293.66], // G minor-ish
+        [174.61, 220.00, 261.63], // F
+        [164.81, 196.00, 246.94], // E
+        [146.83, 196.00, 220.00]  // D
+      ];
+      chords.forEach((chs, i)=>{
+        const t0 = now + i * step * 4;
+        chs.forEach(f=> bgmTone(ctx, 'sine', f, t0, step*4.2, 0.11, master));
+        chs.forEach(f=> bgmTone(ctx, 'triangle', f*2, t0, step*3.6, 0.035, master));
+      });
+      // soft bouncing melody
+      const melody = [392, 440, 523.25, 440, 392, 349.23, 329.63, 349.23];
+      melody.forEach((f,i)=>{
+        bgmTone(ctx, 'sine', f, now + i*step*2, step*1.8, 0.07, master);
+      });
+    };
+    playBar();
+    BGM.timer = setInterval(playBar, 16 * step * 1000);
+    syncBgmBtn();
+  }catch(e){}
+}
+function stopBgm(){
+  BGM.on = false;
+  if(BGM.timer){ clearInterval(BGM.timer); BGM.timer = null; }
+  syncBgmBtn();
+}
+function toggleBgm(){
+  if(BGM.timer){ stopBgm(); }
+  else { BGM.on = true; startBgm(); }
+}
+function syncBgmBtn(){
+  const b = document.getElementById('bgmBtn');
+  if(b) b.textContent = BGM.timer ? '♪' : '♫';
+}
+document.addEventListener('pointerdown', ()=>{ if(BGM.on) startBgm(); }, { passive:true });
 
 let G = null;
 const root = document.getElementById('root');
@@ -1288,7 +1365,7 @@ function startLoading(){
 function finishLoading(){
   const scr = document.getElementById('loadingScreen');
   scr.style.opacity = '0';
-  setTimeout(()=>{ scr.style.display = 'none'; newGame(); }, 400);
+  setTimeout(()=>{ scr.style.display = 'none'; newGame(); startBgm(); }, 400);
 }
 
 function goHome(){ playSfx('click'); netDisconnect(); newGame(); }
