@@ -936,15 +936,36 @@
   }
   .play-frame .stage{flex:1 1 auto;min-height:0;}
   #netHud{
-    position:absolute;left:50%;bottom:10px;transform:translateX(-50%);
-    z-index:40;
+    position:absolute;left:8px;right:8px;bottom:8px;transform:none;
+    z-index:200;
     display:none;flex-direction:column;align-items:center;gap:8px;
-    pointer-events:none;
+    pointer-events:auto;
   }
-  #netHud .emoji-panel, #netHud .hud-btns{pointer-events:auto;}
+  .voice-bar{
+    display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:10px;
+    margin-top:12px;padding:10px 12px;
+    background:#eef2ff;border:1px solid var(--line);border-radius:16px;
+    position:relative;z-index:5;
+  }
+  .voice-bar .hud-btn, #netHud .hud-btn{
+    width:56px;height:56px;min-width:56px;min-height:56px;
+    touch-action:manipulation;-webkit-tap-highlight-color:rgba(99,102,241,.25);
+  }
   .hud-status{
     font-size:11px;font-weight:800;color:#3730a3;background:rgba(255,255,255,.92);
     border:1px solid var(--line);border-radius:999px;padding:4px 10px;
+  }
+  .quick-chat{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:100%;}
+  .chat-chip{
+    padding:6px 10px;border-radius:999px;border:1px solid var(--line);
+    background:#fff;font-size:12px;font-weight:800;color:#3730a3;
+  }
+  .chat-float{
+    position:fixed;left:50%;bottom:110px;transform:translateX(-50%);
+    background:#fff;border:1px solid var(--line);border-radius:14px;
+    padding:8px 14px;font-weight:800;color:#0b1220;z-index:90;
+    box-shadow:var(--shadow);animation:emojiPop 1.8s ease forwards;
+    max-width:80vw;
   }
   .hud-btns{display:flex;gap:8px;}
   .hud-btn{
@@ -1029,10 +1050,8 @@
     <div id="netHud">
       <div class="emoji-panel" id="emojiPanel"></div>
       <div class="hud-btns">
-        <button class="hud-btn" id="emojiBtn" title="Send emoji" onclick="toggleEmojiPanel()">😊</button>
-        <button class="hud-btn" id="micBtn" title="Voice chat" onclick="toggleMic()">🎤</button>
+        <button class="hud-btn" id="emojiBtn" title="Chat" onclick="toggleEmojiPanel()">💬</button>
       </div>
-      <div class="hud-status" id="micStatus">Tap mic to talk</div>
     </div>
   </div>
   <footer class="credit">The Poker Chess · by DG</footer>
@@ -2042,10 +2061,12 @@ function render(){
     if(G.phase==='modeSelect') return renderModeSelect();
     if(G.phase==='onlineLobby') return renderOnlineLobby();
     if(G.phase==='difficultySelect') return renderDifficultySelect();
-    if(G.phase==='purseSetup') return renderPurseSetup();
-    if(G.phase==='auction') return renderAuction();
-    if(G.phase==='placement') return renderPlacement();
-    if(G.phase==='battle' || G.phase==='gameover') return renderBattle();
+    if(G.phase==='purseSetup') renderPurseSetup();
+    else if(G.phase==='auction') renderAuction();
+    else if(G.phase==='placement') renderPlacement();
+    else if(G.phase==='battle' || G.phase==='gameover') renderBattle();
+    bindVoiceBar();
+    syncNetHud();
   }catch(err){
     console.error('render failed', err);
   }
@@ -2170,6 +2191,7 @@ function renderPurseSetup(){
       </div>
       ${voteHtml}
       ${(!online || host) ? `<button class="btn-primary" onclick="${online?'proposePurse()':'confirmPurse()'}">${online?'Send coin vote →':'Start the auction →'}</button>` : ''}
+      ${G.mode==='online' ? voiceBarHtml() : ''}
       <div style="margin-top:14px;"><button class="btn-ghost" onclick="goBackFromPurse()">← back</button></div>
     </div>
   `;
@@ -2349,6 +2371,7 @@ function renderPlacement(){
           ${waitingOpp ? '' : `<button class="btn-ghost" onclick="autoPlaceRest()" ${remaining===0?'disabled':''}>Auto-place rest</button>
           <button class="btn-primary" onclick="confirmPlacement()">Confirm ${label}'s setup →</button>`}
         </div>
+        ${G.mode==='online' ? voiceBarHtml() : ''}
       </div>
     </div>
   `;
@@ -2413,6 +2436,7 @@ function renderBattle(){
         ${G.phase==='battle' ? `<button class="btn-ghost" onclick="offerDraw()">🤝 Offer a draw</button>` : ''}
         ${G.drawNote ? `<div class="draw-note">${G.drawNote}</div>` : ''}
         <button class="btn-ghost" onclick="restartToModeSelect()">New game — restart</button>
+        ${G.mode==='online' ? voiceBarHtml() : ''}
       </div>
     </div>
     ${G.promo && !(G.mode==='online' && G.promo.color!==G.netColor) ? renderPromoModal() : ''}
@@ -2754,7 +2778,6 @@ function netTryReconnect(){
 
 function netDisconnect(){
   netStopHeartbeat();
-  stopMic(true);
   try{ if(Net.conn) Net.conn.close(); }catch(e){}
   try{ if(Net.peer) Net.peer.destroy(); }catch(e){}
   Net.peer = null;
@@ -2810,17 +2833,7 @@ function netEnsurePeer(){
     Net.role = 'host';
     netAttachConn(conn);
   });
-  Net.peer.on('call', async (call)=>{
-    try{
-      const stream = await ensureLocalMic();
-      Net.micOn = true;
-      call.answer(stream);
-    }catch(e){
-      call.answer();
-    }
-    bindVoiceCall(call);
-    syncNetHud();
-  });
+
   Net.peer.on('error', (err)=>{
     const msg = String(err && (err.type || err.message) || err);
     if(msg.indexOf('unavailable-id') !== -1 || msg==='unavailable-id'){
@@ -3095,16 +3108,8 @@ function netHandle(msg){
     case 'emoji':
       showIncomingEmoji(msg.e, msg.from);
       break;
-    case 'voiceOn':
-      if(!Net.micOn){
-        ensureLocalMic().then(()=>{
-          Net.micOn = true;
-          startVoiceCall();
-          syncNetHud();
-        }).catch(()=>{});
-      }
-      break;
-    case 'voiceOff':
+    case 'chat':
+      showChatBubble(msg.text, msg.from||'Friend');
       break;
   }
 }
@@ -3134,6 +3139,8 @@ function renderOnlineLobby(){
   const recent = loadRecentFriends();
   const friends = loadFriends();
   const tab = Net.lobbyTab || 'play';
+  const onlineNow = (Net.onlineNow||[]).filter(n=>n && n!==Net.myId);
+  const onlineCount = onlineNow.length;
   const statusCls = Net.status==='error' ? 'err' : (Net.status==='connected' ? 'ok' : '');
   const statusText = {
     idle: 'Your guest name is ready. You can keep it or change it.',
@@ -3144,6 +3151,8 @@ function renderOnlineLobby(){
     error: Net.error || 'Something went wrong.'
   }[Net.status] || '';
   const playPane = `
+        <div class="id-label">Play with Friends</div>
+        <p style="font-size:12px;font-weight:700;color:var(--text-dim);margin:0 0 8px;">Type a friend’s username or tap a saved name.</p>
         <div class="id-label">Find a player</div>
         <div class="id-row">
           <input class="id-input" id="friendIdInput" maxlength="16" placeholder="THEIR NAME" value="${Net.friendDraft || Net.friendId || ''}"
@@ -3158,6 +3167,16 @@ function renderOnlineLobby(){
         </div>` : ''}
         ${recent.length ? `<div class="id-label" style="margin-top:14px;">Recent</div>
           <div class="recent-list">${recent.map(id=>`<div class="recent-chip" onclick="netConnectToFriend('${id}')">${id}</div>`).join('')}</div>` : ''}
+  `;
+  const onlinePane = `
+        <div class="id-label">Players online now</div>
+        <p style="font-size:12px;font-weight:700;color:var(--text-dim);margin:0 0 8px;">Anyone on Play Online can be matched automatically.</p>
+        <button class="btn-primary" onclick="autoMatchOnline()">Play with a random online player</button>
+        ${onlineNow.length ? onlineNow.map(id=>`
+          <div class="friend-row">
+            <span class="nm">${id}</span>
+            <button class="btn-primary" onclick="netConnectToFriend('${id}')">Play</button>
+          </div>`).join('') : '<div class="net-status">No other players are visible yet. Keep this tab open — names show up when someone else is online.</div>'}
   `;
   const requests = loadRequests();
   const online = (Net.onlineNow||[]).filter(n=>n && n!==Net.myId);
@@ -3199,7 +3218,8 @@ function renderOnlineLobby(){
       <h2>Play Online</h2>
       <p>You get a random guest name. You can change it — if someone already uses that name, you must pick another. Your name and friends are saved on this device in the browser. Updating the game file on the same website does not erase them.</p>
       <div class="lobby-tabs">
-        <button class="lobby-tab ${tab==='play'?'on':''}" onclick="Net.lobbyTab='play';render()">Play</button>
+        <button class="lobby-tab ${tab==='play'?'on':''}" onclick="Net.lobbyTab='play';render()">Play with Friends</button>
+        <button class="lobby-tab ${tab==='online'?'on':''}" onclick="Net.lobbyTab='online';render()">Play online ${onlineCount?('· '+onlineCount):''}</button>
         <button class="lobby-tab ${tab==='friends'?'on':''}" onclick="Net.lobbyTab='friends';render()">Friends ${friends.length?('· '+friends.length):''}</button>
       </div>
       <div class="id-card">
@@ -3233,7 +3253,7 @@ function renderOnlineLobby(){
           <button class="btn-ghost" onclick="cancelEditName()">Cancel</button>
         </div>` : ''}
         <div class="net-status ${statusCls}">${statusText}</div>
-        ${tab==='friends' ? friendPane : playPane}
+        ${tab==='friends' ? friendPane : (tab==='online' ? onlinePane : playPane)}
       </div>
       <div style="margin-top:16px;"><button class="btn-ghost" onclick="goToModeSelect()">← back</button></div>
     </div>
@@ -3270,6 +3290,7 @@ function renderAuctionOnline(){
         : `<div class="bid-panel" style="max-width:420px;margin:0 auto;">${bidPanelHtml(me)}</div>`
       }
       <div class="rosters-row" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${rosterHtml('w')}${rosterHtml('b')}</div>
+      ${voiceBarHtml()}
     </div>
   `;
 }
@@ -3277,11 +3298,30 @@ function renderAuctionOnline(){
 
 const EMOJI_SET = ['😀','😁','😂','😊','😍','🤩','😎','🙂','😉','😇','🤔','😮','😯','😢','😭','😡','😤','😱','😴','👍','👎','👏','🤝','💪','🔥','🎉','❤️','👀','🙌','😅'];
 
+function voiceBarHtml(){
+  if(!G || G.mode!=='online') return '';
+  return `<div class="voice-bar">
+    <button type="button" class="hud-btn js-emoji" aria-label="Chat">💬</button>
+    <div class="quick-chat">${QUICK_CHAT.map(m=>`<button type="button" class="chat-chip" onclick="sendQuickChat(this.dataset.m)" data-m="${m}">${m}</button>`).join('')}</div>
+  </div>`;
+}
+function bindVoiceBar(){
+  const hit = (el, fn)=>{
+    if(!el || el.dataset.bound==='1') return;
+    el.dataset.bound = '1';
+    const go = (ev)=>{ ev.preventDefault(); ev.stopPropagation(); fn(); };
+    el.addEventListener('click', go);
+    el.addEventListener('touchend', go, {passive:false});
+  };
+  document.querySelectorAll('.js-emoji').forEach(el=>hit(el, toggleEmojiPanel));
+  hit(document.getElementById('emojiBtn'), toggleEmojiPanel);
+}
+
 function syncNetHud(){
   const hud = document.getElementById('netHud');
   if(!hud) return;
-  const live = G && G.mode==='online' && Net.conn && Net.conn.open &&
-    ['purseSetup','auction','placement','battle','gameover'].indexOf(G.phase)!==-1;
+  const live = !!(G && G.mode==='online' &&
+    ['purseSetup','auction','placement','battle','gameover'].indexOf(G.phase)!==-1);
   hud.style.display = live ? 'flex' : 'none';
   const mic = document.getElementById('micBtn');
   if(mic){
@@ -3296,7 +3336,9 @@ function syncNetHud(){
   const panel = document.getElementById('emojiPanel');
   if(panel){
     if(!panel.dataset.ready){
-      panel.innerHTML = EMOJI_SET.map(e=>`<button type="button" onclick="sendEmoji('${e}')">${e}</button>`).join('');
+      panel.innerHTML = QUICK_CHAT.map(m=>`<button type="button" class="chat-chip" onclick="sendQuickChat('${m}')">${m}</button>`).join('')
+        + '<div style="grid-column:1/-1;height:1px;background:var(--line);margin:4px 0;"></div>'
+        + EMOJI_SET.map(e=>`<button type="button" onclick="sendEmoji('${e}')">${e}</button>`).join('');
       panel.dataset.ready = '1';
     }
     panel.classList.toggle('open', !!Net.emojiOpen);
@@ -3319,6 +3361,32 @@ function showIncomingEmoji(e, from){
   el.title = from||'';
   document.body.appendChild(el);
   setTimeout(()=>{ el.remove(); }, 1700);
+}
+const QUICK_CHAT = ['Hi!','Good luck!','Nice bid!','Well played!','Good game!','Your turn','Let’s go!','Wait…','Oops!','Thanks!','Yes','No','Wow!','Rematch?'];
+function sendQuickChat(text){
+  netSend({ t:'chat', text, from: Net.myId });
+  showChatBubble(text, 'You');
+  Net.emojiOpen = false;
+  syncNetHud();
+}
+function showChatBubble(text, from){
+  const el = document.createElement('div');
+  el.className = 'chat-float';
+  el.innerHTML = '<b>'+String(from||'')+'</b> '+String(text||'');
+  document.body.appendChild(el);
+  setTimeout(()=>{ el.remove(); }, 2200);
+}
+function autoMatchOnline(){
+  const list = (Net.onlineNow||[]).filter(n=>n && n!==Net.myId);
+  if(!list.length){
+    Net.status='error';
+    Net.error='No other players are online right now. Keep this tab open.';
+    Net.lobbyTab='online';
+    render();
+    return;
+  }
+  const pick = list[Math.floor(Math.random()*list.length)];
+  netConnectToFriend(pick);
 }
 
 function playRemoteVoice(stream){
