@@ -1203,17 +1203,32 @@ function startBgm(){
 function stopBgm(){
   BGM.on = false;
   if(BGM.timer){ clearInterval(BGM.timer); BGM.timer = null; }
+  try{ audioCtx().suspend(); }catch(e){}
   syncBgmBtn();
 }
+function pauseBgmForBackground(){
+  if(BGM.timer){ clearInterval(BGM.timer); BGM.timer = null; }
+  try{ audioCtx().suspend(); }catch(e){}
+}
+function resumeBgmFromBackground(){
+  if(!BGM.on) return;
+  try{ audioCtx().resume(); }catch(e){}
+  startBgm();
+}
 function toggleBgm(){
-  if(BGM.timer){ stopBgm(); }
+  if(BGM.on && BGM.timer){ stopBgm(); }
   else { BGM.on = true; startBgm(); }
 }
 function syncBgmBtn(){
   const b = document.getElementById('bgmBtn');
-  if(b) b.textContent = BGM.timer ? '♪' : '♫';
+  if(b) b.textContent = (BGM.on && BGM.timer) ? '♪' : '♫';
 }
-document.addEventListener('pointerdown', ()=>{ if(BGM.on) startBgm(); }, { passive:true });
+document.addEventListener('pointerdown', ()=>{ if(BGM.on && !document.hidden) startBgm(); }, { passive:true });
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) pauseBgmForBackground();
+  else resumeBgmFromBackground();
+});
+window.addEventListener('pagehide', pauseBgmForBackground);
 
 let G = null;
 const root = document.getElementById('root');
@@ -3332,13 +3347,28 @@ function bindVoiceCall(call){
     if(st) st.textContent = 'Voice failed — tap mic again';
   });
 }
+function setMicStatus(text){
+  const st = document.getElementById('micStatus');
+  if(st) st.textContent = text;
+}
+function getMicAPI(){
+  const md = navigator.mediaDevices;
+  if(md && md.getUserMedia) return (opts)=> md.getUserMedia(opts);
+  const legacy = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+  if(legacy) return (opts)=> new Promise((res,rej)=> legacy.call(navigator, opts, res, rej));
+  return null;
+}
 async function ensureLocalMic(){
   if(Net.localStream && Net.localStream.getAudioTracks().some(tr=>tr.readyState==='live'))
     return Net.localStream;
-  Net.localStream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true },
-    video: false
-  });
+  const ask = getMicAPI();
+  if(!ask) throw new Error('no-mic-api');
+  // Simple constraint first so phones actually show the permission popup
+  try{
+    Net.localStream = await ask({ audio:true, video:false });
+  }catch(e){
+    Net.localStream = await ask({ audio:true });
+  }
   return Net.localStream;
 }
 function stopMic(silent){
@@ -3351,6 +3381,7 @@ function stopMic(silent){
   Net.micOn = false;
   if(!silent){
     try{ netSend({ t:'voiceOff' }); }catch(e){}
+    setMicStatus('Tap mic to talk');
     syncNetHud();
   }
 }
@@ -3362,23 +3393,34 @@ async function startVoiceCall(){
 }
 async function toggleMic(){
   if(Net.micOn){ stopMic(); return; }
-  if(!Net.peer || !Net.friendId || !Net.conn || !Net.conn.open){
-    const st = document.getElementById('micStatus');
-    if(st) st.textContent = 'Connect to a friend first';
-    return;
-  }
+  setMicStatus('Asking for microphone…');
   try{
+    // Must run on the tap so the phone shows the permission box
     await ensureLocalMic();
     Net.micOn = true;
     syncNetHud();
-    const st = document.getElementById('micStatus');
-    if(st) st.textContent = 'Mic on — waiting for friend';
+    setMicStatus('Mic allowed');
+    if(!Net.peer || !Net.friendId || !Net.conn || !Net.conn.open){
+      setMicStatus('Mic on — connect a friend to talk');
+      return;
+    }
+    setMicStatus('Mic on — connecting voice…');
     netSend({ t:'voiceOn', from: Net.myId });
     await startVoiceCall();
   }catch(err){
     Net.micOn = false;
     syncNetHud();
-    alert('Allow the microphone when the browser asks, then tap 🎤 again.');
+    const msg = String(err && (err.name || err.message) || err);
+    if(msg.indexOf('no-mic-api')!==-1){
+      setMicStatus('This app cannot use the mic');
+      alert('This phone app cannot reach the microphone. Open the game in Chrome, or allow Microphone in the APK / WebIntoApp settings.');
+    } else if(msg.indexOf('NotAllowed')!==-1 || msg.indexOf('Permission')!==-1){
+      setMicStatus('Permission denied');
+      alert('Microphone was blocked. In the phone browser tap the lock/site icon → Permissions → Microphone → Allow, then tap 🎤 again.');
+    } else {
+      setMicStatus('Mic failed');
+      alert('Could not start the microphone. Close other apps using the mic, then tap 🎤 again.');
+    }
   }
 }
 
