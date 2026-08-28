@@ -928,9 +928,23 @@
     background:#f8fafc;margin-top:8px;
   }
   .friend-row .nm{font-family:'Orbitron',sans-serif;font-weight:900;color:#3730a3;letter-spacing:1px;}
+  .play-frame{
+    position:relative;
+    flex:1 1 auto;
+    min-height:0;
+    display:flex;
+  }
+  .play-frame .stage{flex:1 1 auto;min-height:0;}
   #netHud{
-    position:fixed;right:12px;bottom:12px;z-index:80;
-    display:none;flex-direction:column;align-items:flex-end;gap:8px;
+    position:absolute;left:50%;bottom:10px;transform:translateX(-50%);
+    z-index:40;
+    display:none;flex-direction:column;align-items:center;gap:8px;
+    pointer-events:none;
+  }
+  #netHud .emoji-panel, #netHud .hud-btns{pointer-events:auto;}
+  .hud-status{
+    font-size:11px;font-weight:800;color:#3730a3;background:rgba(255,255,255,.92);
+    border:1px solid var(--line);border-radius:999px;padding:4px 10px;
   }
   .hud-btns{display:flex;gap:8px;}
   .hud-btn{
@@ -1010,17 +1024,20 @@
     </div>
   </div>
 
-  <div id="root" class="stage"></div>
+  <div class="play-frame">
+    <div id="root" class="stage"></div>
+    <div id="netHud">
+      <div class="emoji-panel" id="emojiPanel"></div>
+      <div class="hud-btns">
+        <button class="hud-btn" id="emojiBtn" title="Send emoji" onclick="toggleEmojiPanel()">😊</button>
+        <button class="hud-btn" id="micBtn" title="Voice chat" onclick="toggleMic()">🎤</button>
+      </div>
+      <div class="hud-status" id="micStatus">Tap mic to talk</div>
+    </div>
+  </div>
   <footer class="credit">The Poker Chess · by DG</footer>
 </div>
 <audio id="remoteVoice" autoplay playsinline></audio>
-<div id="netHud">
-  <div class="emoji-panel" id="emojiPanel"></div>
-  <div class="hud-btns">
-    <button class="hud-btn" id="emojiBtn" title="Send emoji" onclick="toggleEmojiPanel()">😊</button>
-    <button class="hud-btn" id="micBtn" title="Voice chat" onclick="toggleMic()">🎤</button>
-  </div>
-</div>
 
 <script>
 /* =========================================================
@@ -1154,7 +1171,7 @@ function startBgm(){
     if(BGM.timer) return;
     BGM.started = true;
     const master = ctx.createGain();
-    master.gain.value = 0.055; // quiet vibey bed
+    master.gain.value = 0.20; // clearer in-game bed
     master.connect(ctx.destination);
     const step = 0.46;
     const playBar = ()=>{
@@ -1169,13 +1186,13 @@ function startBgm(){
       ];
       chords.forEach((chs, i)=>{
         const t0 = now + i * step * 4;
-        chs.forEach(f=> bgmTone(ctx, 'sine', f, t0, step*4.2, 0.11, master));
-        chs.forEach(f=> bgmTone(ctx, 'triangle', f*2, t0, step*3.6, 0.035, master));
+        chs.forEach(f=> bgmTone(ctx, 'sine', f, t0, step*4.2, 0.16, master));
+        chs.forEach(f=> bgmTone(ctx, 'triangle', f*2, t0, step*3.6, 0.06, master));
       });
       // soft bouncing melody
       const melody = [392, 440, 523.25, 440, 392, 349.23, 329.63, 349.23];
       melody.forEach((f,i)=>{
-        bgmTone(ctx, 'sine', f, now + i*step*2, step*1.8, 0.07, master);
+        bgmTone(ctx, 'sine', f, now + i*step*2, step*1.8, 0.12, master);
       });
     };
     playBar();
@@ -2778,11 +2795,16 @@ function netEnsurePeer(){
     Net.role = 'host';
     netAttachConn(conn);
   });
-  Net.peer.on('call', (call)=>{
-    Net.call = call;
-    call.answer(Net.localStream || undefined);
-    call.on('stream', playRemoteVoice);
-    call.on('close', ()=>{ Net.micOn=false; syncNetHud(); });
+  Net.peer.on('call', async (call)=>{
+    try{
+      const stream = await ensureLocalMic();
+      Net.micOn = true;
+      call.answer(stream);
+    }catch(e){
+      call.answer();
+    }
+    bindVoiceCall(call);
+    syncNetHud();
   });
   Net.peer.on('error', (err)=>{
     const msg = String(err && (err.type || err.message) || err);
@@ -3058,6 +3080,17 @@ function netHandle(msg){
     case 'emoji':
       showIncomingEmoji(msg.e, msg.from);
       break;
+    case 'voiceOn':
+      if(!Net.micOn){
+        ensureLocalMic().then(()=>{
+          Net.micOn = true;
+          startVoiceCall();
+          syncNetHud();
+        }).catch(()=>{});
+      }
+      break;
+    case 'voiceOff':
+      break;
   }
 }
 
@@ -3149,7 +3182,7 @@ function renderOnlineLobby(){
   root.innerHTML = `
     <div class="intro">
       <h2>Play Online</h2>
-      <p>You get a random guest name. You can change it — if someone already uses that name, you must pick another.</p>
+      <p>You get a random guest name. You can change it — if someone already uses that name, you must pick another. Your name and friends are saved on this device in the browser. Updating the game file on the same website does not erase them.</p>
       <div class="lobby-tabs">
         <button class="lobby-tab ${tab==='play'?'on':''}" onclick="Net.lobbyTab='play';render()">Play</button>
         <button class="lobby-tab ${tab==='friends'?'on':''}" onclick="Net.lobbyTab='friends';render()">Friends ${friends.length?('· '+friends.length):''}</button>
@@ -3241,6 +3274,10 @@ function syncNetHud(){
     mic.classList.toggle('mute', !Net.micOn);
     mic.textContent = Net.micOn ? '🎤' : '🔇';
   }
+  const st = document.getElementById('micStatus');
+  if(st && live){
+    st.textContent = Net.micOn ? 'Mic on' : 'Tap mic to talk';
+  }
   const panel = document.getElementById('emojiPanel');
   if(panel){
     if(!panel.dataset.ready){
@@ -3270,10 +3307,39 @@ function showIncomingEmoji(e, from){
 }
 
 function playRemoteVoice(stream){
-  const a = document.getElementById('remoteVoice');
-  if(!a) return;
+  let a = document.getElementById('remoteVoice');
+  if(!a){
+    a = document.createElement('audio');
+    a.id = 'remoteVoice';
+    a.autoplay = true;
+    a.setAttribute('playsinline','');
+    document.body.appendChild(a);
+  }
   a.srcObject = stream;
-  a.play().catch(()=>{});
+  a.muted = false;
+  a.volume = 1;
+  const p = a.play();
+  if(p && p.catch) p.catch(()=>{});
+  const st = document.getElementById('micStatus');
+  if(st) st.textContent = 'Voice connected';
+}
+function bindVoiceCall(call){
+  if(!call) return;
+  Net.call = call;
+  call.on('stream', playRemoteVoice);
+  call.on('error', ()=>{
+    const st = document.getElementById('micStatus');
+    if(st) st.textContent = 'Voice failed — tap mic again';
+  });
+}
+async function ensureLocalMic(){
+  if(Net.localStream && Net.localStream.getAudioTracks().some(tr=>tr.readyState==='live'))
+    return Net.localStream;
+  Net.localStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation:true, noiseSuppression:true, autoGainControl:true },
+    video: false
+  });
+  return Net.localStream;
 }
 function stopMic(silent){
   try{ if(Net.call) Net.call.close(); }catch(e){}
@@ -3283,26 +3349,36 @@ function stopMic(silent){
     Net.localStream = null;
   }
   Net.micOn = false;
-  if(!silent) syncNetHud();
+  if(!silent){
+    try{ netSend({ t:'voiceOff' }); }catch(e){}
+    syncNetHud();
+  }
+}
+async function startVoiceCall(){
+  if(!Net.peer || !Net.peerOpen || !Net.friendId) return;
+  const stream = await ensureLocalMic();
+  const call = Net.peer.call(peerIdFromCode(Net.friendId), stream);
+  bindVoiceCall(call);
 }
 async function toggleMic(){
   if(Net.micOn){ stopMic(); return; }
-  if(!Net.peer || !Net.friendId){
-    Net.status='error'; Net.error='Connect to a friend first.'; render(); return;
+  if(!Net.peer || !Net.friendId || !Net.conn || !Net.conn.open){
+    const st = document.getElementById('micStatus');
+    if(st) st.textContent = 'Connect to a friend first';
+    return;
   }
   try{
-    Net.localStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+    await ensureLocalMic();
     Net.micOn = true;
-    const call = Net.peer.call(peerIdFromCode(Net.friendId), Net.localStream);
-    Net.call = call;
-    if(call){
-      call.on('stream', playRemoteVoice);
-      call.on('close', ()=>{ Net.micOn=false; syncNetHud(); });
-    }
     syncNetHud();
+    const st = document.getElementById('micStatus');
+    if(st) st.textContent = 'Mic on — waiting for friend';
+    netSend({ t:'voiceOn', from: Net.myId });
+    await startVoiceCall();
   }catch(err){
     Net.micOn = false;
-    alert('Microphone permission is needed to talk.');
+    syncNetHud();
+    alert('Allow the microphone when the browser asks, then tap 🎤 again.');
   }
 }
 
